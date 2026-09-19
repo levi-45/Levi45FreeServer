@@ -16,9 +16,6 @@ import subprocess
 PLUGIN_PATH = "/usr/lib/enigma2/python/Plugins/Extensions/Levi45FreeServer"
 
 # A list of URLs for scraping. We'll use curl to handle the SSL issues.
-# The URL must be a valid source of free CCcam servers.
-# The `parser_curl_regex` will handle the parsing.
-# For dynamic URLs, use a dictionary with a 'url_generator' key.
 SCRAPE_URLS = [
     ("https://cccam-premium.pro/free-cccam/", "parser_curl_regex"),
     ("https://cccamsate.com/free", "parser_curl_regex"),
@@ -30,18 +27,16 @@ SCRAPE_URLS = [
     ("https://cccamfree48h.yolasite.com/server-2.php", "parser_curl_regex"),
     ("https://cccamx.com/free-cccam", "parser_curl_regex"),
     ("https://bosscccam.co/Test.php", "parser_curl_regex"),
-    ("https://iptv-15days.blogspot.com/", "parser_curl_regex"),            
+    ("https://iptv-15days.blogspot.com/", "parser_curl_regex"),
     ("https://raw.githubusercontent.com/levi-45/free-cccam/main/servers.txt", "parser_curl_regex"),
-    # This URL is dynamic and will use a new dedicated parser.
-    # It fetches the previous day's servers.
+    # Dynamic URLs for testious.com
     {"url_generator": lambda: "https://testious.com/old-free-cccam-servers/{}/".format((datetime.date.today() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')),
      "parser_name": "parser_testious_servers"},
-    # New entry to also scrape for the current day's servers from testious.com
     {"url_generator": lambda: "https://testious.com/old-free-cccam-servers/{}/".format(datetime.date.today().strftime('%Y-%m-%d')),
      "parser_name": "parser_testious_servers"}
 ]
 
-# Changed the log file location to /tmp, which is cleared on reboot.
+# Log file location - /tmp is cleared on reboot
 LOG_FILE = "/tmp/downloader.log"
 
 # Configuration setup
@@ -53,33 +48,30 @@ config.plugins.Levi45FreeServer.softcam = ConfigSelection(
         ("oscam", "OSCam"),
         ("ncam", "NCam")
     ],
-    default="cccam"
+    default="oscam"
 )
-config.plugins.Levi45FreeServer.outputfile = ConfigText(default="/etc/CCcam.cfg", fixed_size=False)
+config.plugins.Levi45FreeServer.outputfile = ConfigText(default="/etc/tuxbox/config/oscam.server", fixed_size=False)
 config.plugins.Levi45FreeServer.downloadinterval = ConfigInteger(default=1, limits=(1, 168))  # hours
 config.plugins.Levi45FreeServer.enablecron = ConfigSelection(choices=[("0", "Disabled"), ("1", "Enabled")], default="0")
 
+
 def log(message):
-    """
-    A simple logging function to help with debugging.
-    """
+    """Simple logging function to help with debugging."""
     try:
         with open(LOG_FILE, "a") as f:
             f.write("[{}] {}\n".format(datetime.datetime.now(), message))
     except Exception as e:
         print("Failed to write to log file: {}".format(e))
 
+
 # ============================================================================
-# Helper Functions for Parsing Web Pages
-#
-# This new parser uses the output of a shell command (curl).
+# Parser Functions
 # ============================================================================
 
 def parse_servers_curl_regex(html_content):
     """
-    Parses an HTML page using a more flexible regex pattern.
+    Parses an HTML page using a flexible regex pattern.
     Assumes the format is like: 'C: host port user pass'
-    This version is more flexible to handle variations in whitespace.
     Returns a list of parsed server lines.
     """
     servers = []
@@ -89,10 +81,10 @@ def parse_servers_curl_regex(html_content):
         servers.append("C: {} {} {} {}".format(host, port, user, password))
     return servers
 
+
 def parse_testious_servers(html_content):
     """
     Parses HTML content from testious.com using a more precise regex.
-    This version is more robust and less prone to false positives.
     """
     servers = []
     
@@ -118,6 +110,13 @@ def parse_testious_servers(html_content):
 
     return servers
 
+
+PARSERS = {
+    "parser_curl_regex": parse_servers_curl_regex,
+    "parser_testious_servers": parse_testious_servers,
+}
+
+
 # ============================================================================
 # Conversion Function for OSCam and NCam
 # ============================================================================
@@ -125,7 +124,6 @@ def parse_testious_servers(html_content):
 def convert_to_oscam_reader(server_line):
     """
     Converts a CCcam or Newcamd line to an OSCam or NCam reader configuration.
-    Returns the formatted string.
     """
     parts = server_line.split()
     reader_config = ""
@@ -176,30 +174,31 @@ ccckeepalive=1
     return reader_config.strip()
 
 
-PARSERS = {
-    "parser_curl_regex": parse_servers_curl_regex,
-    "parser_testious_servers": parse_testious_servers,
-}
+# ============================================================================
+# State file helpers (shared with cron_download.sh)
+# ============================================================================
+
+AUTODOWNLOAD_FILE = "/etc/levi45_autodownload.txt"
+SOFTCAM_STATE_FILE = "/etc/levi45_softcam.txt"
+OUTPUTFILE_STATE_FILE = "/etc/levi45_outputfile.txt"
 
 # Global variable to track last download time
 last_download_time = None
 
-# Simple file-based configuration
-AUTODOWNLOAD_FILE = "/etc/levi45_autodownload.txt"
 
 def is_autodownload_enabled():
-    """Check if auto-download is enabled using simple file-based storage"""
+    """Check if auto-download is enabled."""
     try:
         if os.path.exists(AUTODOWNLOAD_FILE):
             with open(AUTODOWNLOAD_FILE, "r") as f:
-                content = f.read().strip()
-                return content == "True"
+                return f.read().strip() == "True"
         return False
     except:
         return False
 
+
 def set_autodownload_enabled(enabled):
-    """Set auto-download status using simple file-based storage"""
+    """Set auto-download status."""
     try:
         with open(AUTODOWNLOAD_FILE, "w") as f:
             f.write("True" if enabled else "False")
@@ -207,8 +206,31 @@ def set_autodownload_enabled(enabled):
     except:
         return False
 
+
+def write_softcam_state():
+    """Write the current softcam type for cron to read."""
+    try:
+        with open(SOFTCAM_STATE_FILE, "w") as f:
+            f.write(config.plugins.Levi45FreeServer.softcam.value)
+        return True
+    except Exception as e:
+        log("Failed to write softcam state: {}".format(e))
+        return False
+
+
+def write_outputfile_state():
+    """Write the current output file path for cron to read."""
+    try:
+        with open(OUTPUTFILE_STATE_FILE, "w") as f:
+            f.write(config.plugins.Levi45FreeServer.outputfile.value)
+        return True
+    except Exception as e:
+        log("Failed to write outputfile state: {}".format(e))
+        return False
+
+
 def get_last_download_time():
-    """Get the last download time from a file to persist across restarts"""
+    """Get the last download time from a file to persist across restarts."""
     global last_download_time
     try:
         time_file = "/tmp/levi45_last_download.txt"
@@ -220,8 +242,9 @@ def get_last_download_time():
     except:
         last_download_time = None
 
+
 def save_last_download_time():
-    """Save the last download time to a file"""
+    """Save the last download time to a file."""
     global last_download_time
     try:
         time_file = "/tmp/levi45_last_download.txt"
@@ -230,94 +253,152 @@ def save_last_download_time():
     except:
         pass
 
+
+# ============================================================================
+# Cron script generator (writes the FIXED, POSIX-safe shell script)
+# ============================================================================
+
 def create_cron_script():
-    """Create a simple standalone cron script that doesn't import Enigma2 modules"""
-    cron_script = """#!/bin/sh
-# Simple cron script for Levi45FreeServer
+    """
+    Write the standalone cron_download.sh file. This is a POSIX / BusyBox-safe
+    script that reads state files written by the plugin, and produces output
+    matching the plugin's own scraping logic (same regex coverage, same
+    newcamd key handling).
+    """
+    # NOTE: We use a raw triple-quoted string so shell backslashes and ${...}
+    # are preserved literally.
+    cron_script = r'''#!/bin/sh
+# Cron script for Levi45FreeServer - POSIX / BusyBox compatible
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
 LOG_FILE="/tmp/downloader.log"
 AUTODOWNLOAD_FILE="/etc/levi45_autodownload.txt"
 
-# Check if auto-download is enabled
-if [ ! -f "$AUTODOWNLOAD_FILE" ] || [ "$(cat $AUTODOWNLOAD_FILE)" != "True" ]; then
-    echo "$(date '+[%Y-%m-%d %H:%M:%S]') Auto-download disabled, skipping" >> "$LOG_FILE"
+log() {
+    echo "$(date '+[%Y-%m-%d %H:%M:%S]') $1" >> "$LOG_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# Check auto-download flag
+# ---------------------------------------------------------------------------
+if [ ! -f "$AUTODOWNLOAD_FILE" ] || [ "$(cat "$AUTODOWNLOAD_FILE" | tr -d '\r\n ')" != "True" ]; then
+    log "Auto-download disabled, skipping"
     exit 0
 fi
 
-echo "$(date '+[%Y-%m-%d %H:%M:%S]') Cron job started" >> "$LOG_FILE"
+log "Cron job started"
 
-# Get the output file from settings
-OUTPUT_FILE="/etc/CCcam.cfg"
-if [ -f "/etc/enigma2/settings" ]; then
-    OUTPUT_FILE=$(grep "config.plugins.Levi45FreeServer.outputfile" /etc/enigma2/settings | cut -d= -f2)
-    if [ -z "$OUTPUT_FILE" ]; then
-        OUTPUT_FILE="/etc/CCcam.cfg"
+# ---------------------------------------------------------------------------
+# Read settings (prefer dedicated state files written by the plugin)
+# ---------------------------------------------------------------------------
+get_setting() {
+    key="$1"
+    if [ -f /etc/enigma2/settings ]; then
+        val=$(grep "^${key}=" /etc/enigma2/settings | head -n1 | cut -d= -f2-)
+        val=$(echo "$val" | sed 's/^"//; s/"$//; s/[[:space:]]*$//' | tr -d '\r')
+        echo "$val"
     fi
+}
+
+if [ -f /etc/levi45_softcam.txt ]; then
+    SOFTCAM_TYPE=$(cat /etc/levi45_softcam.txt | tr -d '\r\n ')
+else
+    SOFTCAM_TYPE=$(get_setting "config.plugins.Levi45FreeServer.softcam")
+fi
+[ -z "$SOFTCAM_TYPE" ] && SOFTCAM_TYPE="cccam"
+
+if [ -f /etc/levi45_outputfile.txt ]; then
+    OUTPUT_FILE=$(cat /etc/levi45_outputfile.txt | tr -d '\r\n')
+else
+    OUTPUT_FILE=$(get_setting "config.plugins.Levi45FreeServer.outputfile")
+fi
+[ -z "$OUTPUT_FILE" ] && OUTPUT_FILE="/etc/CCcam.cfg"
+
+log "Softcam type: $SOFTCAM_TYPE, Output file: $OUTPUT_FILE"
+
+# ---------------------------------------------------------------------------
+# URLs to scrape
+# ---------------------------------------------------------------------------
+URLS="
+https://cccam-premium.pro/free-cccam/
+https://cccamsate.com/free
+https://cccamiptv.tv/cccamfree/#page-content
+https://cccam.net/freecccam
+https://cccamia.com/cccam-free/
+https://cccamhub.com/cccamfree/
+https://cccamgalaxy.com/
+https://cccamfree48h.yolasite.com/server-2.php
+https://cccamx.com/free-cccam
+https://bosscccam.co/Test.php
+https://iptv-15days.blogspot.com/
+https://raw.githubusercontent.com/levi-45/free-cccam/main/servers.txt
+"
+
+# ---------------------------------------------------------------------------
+# Dynamic testious URLs (yesterday + today). Try python3, python, then date.
+# ---------------------------------------------------------------------------
+if command -v python3 >/dev/null 2>&1; then
+    PY=python3
+elif command -v python >/dev/null 2>&1; then
+    PY=python
+else
+    PY=""
 fi
 
-# Get softcam type from settings
-SOFTCAM_TYPE="cccam"
-if [ -f "/etc/enigma2/settings" ]; then
-    SOFTCAM_TYPE=$(grep "config.plugins.Levi45FreeServer.softcam" /etc/enigma2/settings | cut -d= -f2)
-    if [ -z "$SOFTCAM_TYPE" ]; then
-        SOFTCAM_TYPE="cccam"
-    fi
+if [ -n "$PY" ]; then
+    YESTERDAY=$($PY -c "from datetime import datetime, timedelta; print((datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'))" 2>/dev/null)
+    TODAY=$($PY -c "from datetime import datetime; print(datetime.now().strftime('%Y-%m-%d'))" 2>/dev/null)
 fi
 
-echo "$(date '+[%Y-%m-%d %H:%M:%S]') Softcam type: $SOFTCAM_TYPE, Output file: $OUTPUT_FILE" >> "$LOG_FILE"
+if [ -z "$YESTERDAY" ]; then
+    YESTERDAY=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -D "%s" -d "@$(( $(date +%s) - 86400 ))" +%Y-%m-%d 2>/dev/null)
+fi
+if [ -z "$TODAY" ]; then
+    TODAY=$(date +%Y-%m-%d)
+fi
 
-# List of URLs to scrape (same as in plugin.py)
-URLS=(
-    "https://cccam-premium.pro/free-cccam/"
-    "https://cccamsate.com/free"
-    "https://cccamiptv.tv/cccamfree/#page-content"
-    "https://cccam.net/freecccam"
-    "https://cccamia.com/cccam-free/"
-    "https://cccamhub.com/cccamfree/"
-    "https://cccamgalaxy.com/"
-    "https://cccamfree48h.yolasite.com/server-2.php"
-    "https://cccamx.com/free-cccam"
-    "https://bosscccam.co/Test.php"
-    "https://iptv-15days.blogspot.com/    
-    "https://raw.githubusercontent.com/levi-45/free-cccam/main/servers.txt"
-)
+log "Yesterday: $YESTERDAY, Today: $TODAY"
 
-# Add dynamic URLs for testious.com - FIXED DATE FORMAT
-# Use Python to get dates reliably (since busybox date might not support -d flag)
-YESTERDAY=$(python -c "from datetime import datetime, timedelta; print((datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'))")
-TODAY=$(python -c "from datetime import datetime; print(datetime.now().strftime('%Y-%m-%d'))")
-
-echo "$(date '+[%Y-%m-%d %H:%M:%S]') Yesterday: $YESTERDAY, Today: $TODAY" >> "$LOG_FILE"
-
-URLS+=("https://testious.com/old-free-cccam-servers/$YESTERDAY/")
-URLS+=("https://testious.com/old-free-cccam-servers/$TODAY/")
+URLS="$URLS
+https://testious.com/old-free-cccam-servers/$YESTERDAY/
+https://testious.com/old-free-cccam-servers/$TODAY/
+"
 
 TEMP_FILE="/tmp/servers_temp.txt"
 FINAL_FILE="/tmp/servers_final.txt"
 CONVERTED_FILE="/tmp/servers_converted.txt"
+DOWNLOAD_FILE="/tmp/servers_dl.tmp"
 
-# Clear temp files
-> "$FINAL_FILE"
-> "$TEMP_FILE"
-> "$CONVERTED_FILE"
+: > "$FINAL_FILE"
+: > "$TEMP_FILE"
+: > "$CONVERTED_FILE"
 
-SERVER_COUNT=0
-
-# Function to convert C-line to OSCam reader
+# ---------------------------------------------------------------------------
+# Convert a single C:/N: line to OSCam reader format (POSIX-safe)
+# ---------------------------------------------------------------------------
 convert_to_oscam() {
-    local line="$1"
-    local parts=($line)
-    
-    if [ "${#parts[@]}" -lt 5 ]; then
-        return
-    fi
-    
-    local protocol_type=$(echo "${parts[0]}" | tr -d ':')
-    local host="${parts[1]}"
-    local port="${parts[2]}"
-    local user="${parts[3]}"
-    local password="${parts[4]}"
-    
-    if [ "$protocol_type" = "C" ]; then
+    line="$1"
+    # shellcheck disable=SC2086
+    set -- $line
+
+    proto=$(echo "$1" | tr -d ':')
+    host="$2"
+    port="$3"
+    user="$4"
+    password="$5"
+
+    # Everything from field 6 onwards is the newcamd key (may be split by
+    # whitespace). Join all remaining fields into a single hex string.
+    shift 5
+    key=""
+    for part in "$@"; do
+        key="${key}${part}"
+    done
+
+    [ -z "$host" ] || [ -z "$port" ] || [ -z "$user" ] || [ -z "$password" ] && return
+
+    if [ "$proto" = "C" ]; then
         echo "[reader]"
         echo "label = ${host}_${port}"
         echo "protocol = cccam"
@@ -330,8 +411,7 @@ convert_to_oscam() {
         echo "reconnecttimeout = 30"
         echo "disablelog = 1"
         echo ""
-    elif [ "$protocol_type" = "N" ] && [ "${#parts[@]}" -ge 6 ]; then
-        local key="${parts[5]}"
+    elif [ "$proto" = "N" ] && [ -n "$key" ]; then
         echo "[reader]"
         echo "label=${host}_${port}"
         echo "enable=1"
@@ -352,121 +432,140 @@ convert_to_oscam() {
     fi
 }
 
-# Function to parse servers using regex (improved)
+# ---------------------------------------------------------------------------
+# Parse a downloaded page for C:/N: server lines.
+# Character classes match the Python parser: letters, digits, dot, dash,
+# underscore. Newcamd key may contain spaces and is normalised later.
+# ---------------------------------------------------------------------------
 parse_servers() {
-    local content="$1"
-    local url="$2"
-    
-    # Clean the content - remove HTML tags and keep only text
-    local clean_content=$(echo "$content" | sed 's/<[^>]*>//g' | tr -d '\r' | sed 's/&nbsp;/ /g' | sed 's/&amp;/\&/g')
-    
-    # Extract CCcam servers with various patterns
-    echo "$clean_content" | grep -oE 'C:[[:space:]]*[[:alnum:].-]+[[:space:]]+[0-9]+[[:space:]]+[[:alnum:].-]+[[:space:]]+[[:alnum:].-]+' >> "$TEMP_FILE"
-    echo "$clean_content" | grep -oE 'C:[[:space:]]*[[:alnum:].-]+[[:space:]]+[0-9]+[[:space:]]+[[:alnum:].-]+[[:space:]]+[[:alnum:].-]+[[:space:]]*#' >> "$TEMP_FILE"
-    
-    # Extract Newcamd servers
-    echo "$clean_content" | grep -oE 'N:[[:space:]]*[[:alnum:].-]+[[:space:]]+[0-9]+[[:space:]]+[[:alnum:].-]+[[:space:]]+[[:alnum:].-]+[[:space:]]+[0-9a-fA-F]+' >> "$TEMP_FILE"
-    
-    # Count servers found in this URL
-    local count=$(grep -cE '^[CN]:' "$TEMP_FILE" 2>/dev/null || echo "0")
-    if [ "$count" -gt 0 ]; then
-        echo "$(date '+[%Y-%m-%d %H:%M:%S]') Found $count servers from $url" >> "$LOG_FILE"
-    else
-        echo "$(date '+[%Y-%m-%d %H:%M:%S]') No servers found in $url" >> "$LOG_FILE"
-    fi
+    content="$1"
+    url="$2"
+
+    clean=$(echo "$content" \
+        | sed 's/<[^>]*>//g' \
+        | tr -d '\r' \
+        | sed 's/&nbsp;/ /g; s/&amp;/\&/g; s/&#58;/:/g')
+
+    # CCcam
+    echo "$clean" | grep -oE 'C:[[:space:]]*[A-Za-z0-9._-]+[[:space:]]+[0-9]+[[:space:]]+[A-Za-z0-9._-]+[[:space:]]+[A-Za-z0-9._-]+' >> "$TEMP_FILE"
+
+    # Newcamd (key may contain spaces)
+    echo "$clean" | grep -oE 'N:[[:space:]]*[A-Za-z0-9._-]+[[:space:]]+[0-9]+[[:space:]]+[A-Za-z0-9._-]+[[:space:]]+[A-Za-z0-9._-]+[[:space:]]+[0-9a-fA-F ]+' \
+        | sed 's/[[:space:]]*$//' >> "$TEMP_FILE"
+
+    before=$(wc -l < "$TEMP_FILE" 2>/dev/null || echo 0)
+    log "Parsed $url (temp lines now: $before)"
 }
 
-# Download and parse from each URL
-for URL in "${URLS[@]}"; do
-    echo "$(date '+[%Y-%m-%d %H:%M:%S]') Downloading from $URL" >> "$LOG_FILE"
-    
-    # Download using curl with timeout and follow redirects
-    if curl -k -s -L --max-time 30 -A "Mozilla/5.0" "$URL" -o "$TEMP_FILE".download; then
-        CONTENT=$(cat "$TEMP_FILE".download)
-        parse_servers "$CONTENT" "$URL"
-        rm -f "$TEMP_FILE".download
+# ---------------------------------------------------------------------------
+# Main download loop
+# ---------------------------------------------------------------------------
+log "URL count: $(echo "$URLS" | grep -c '^https')"
+
+echo "$URLS" | while IFS= read -r URL; do
+    [ -z "$URL" ] && continue
+    case "$URL" in
+        http*) ;;
+        *) continue ;;
+    esac
+
+    log "Downloading from $URL"
+
+    if curl -k -s -L --max-time 30 -A "Mozilla/5.0" "$URL" -o "$DOWNLOAD_FILE"; then
+        if [ -s "$DOWNLOAD_FILE" ]; then
+            CONTENT=$(cat "$DOWNLOAD_FILE")
+            parse_servers "$CONTENT" "$URL"
+        else
+            log "Empty response from $URL"
+        fi
     else
-        echo "$(date '+[%Y-%m-%d %H:%M:%S]') Failed to download from $URL" >> "$LOG_FILE"
-        rm -f "$TEMP_FILE".download
+        log "Failed to download from $URL"
     fi
+    rm -f "$DOWNLOAD_FILE"
 done
 
-# Process found servers
+# ---------------------------------------------------------------------------
+# Process results
+# ---------------------------------------------------------------------------
 if [ -s "$TEMP_FILE" ]; then
-    # Clean and deduplicate servers
-    grep -E '^[CN]:' "$TEMP_FILE" | sed 's/#.*//' | sed 's/[[:space:]]*$//' | sort | uniq > "$FINAL_FILE"
+    grep -E '^[CN]:' "$TEMP_FILE" \
+        | sed 's/#.*//' \
+        | sed 's/[[:space:]]*$//' \
+        | sort -u > "$FINAL_FILE"
+
     FINAL_COUNT=$(wc -l < "$FINAL_FILE")
-    
-    echo "$(date '+[%Y-%m-%d %H:%M:%S]') Found $FINAL_COUNT unique servers after processing" >> "$LOG_FILE"
-    
+    log "Found $FINAL_COUNT unique servers after processing"
+
     if [ "$FINAL_COUNT" -gt 0 ]; then
         START_MARKER="# >>>>>> BEGIN AUTO-GENERATED BY Levi45FreeServer <<<<<<"
         END_MARKER="# >>>>>> END AUTO-GENERATED BY Levi45FreeServer <<<<<<"
-        
-        # Backup original file
+
         if [ -f "$OUTPUT_FILE" ]; then
             cp "$OUTPUT_FILE" "$OUTPUT_FILE.backup"
-            # Remove previous content between markers
             sed -i "/$START_MARKER/,/$END_MARKER/d" "$OUTPUT_FILE"
-            sed -i '/^$/N;/^\\n$/D' "$OUTPUT_FILE"
         else
+            mkdir -p "$(dirname "$OUTPUT_FILE")" 2>/dev/null
             touch "$OUTPUT_FILE"
         fi
-        
-        echo "" >> "$OUTPUT_FILE"
-        echo "$START_MARKER" >> "$OUTPUT_FILE"
-        echo "# Generated on $(date '+%Y-%m-%d %H:%M:%S')" >> "$OUTPUT_FILE"
-        echo "# Total servers: $FINAL_COUNT" >> "$OUTPUT_FILE"
-        
-        # Convert to OSCam format if needed
-        if [ "$SOFTCAM_TYPE" = "oscam" ] || [ "$SOFTCAM_TYPE" = "ncam" ]; then
-            echo "$(date '+[%Y-%m-%d %H:%M:%S]') Converting servers to OSCam format" >> "$LOG_FILE"
-            while IFS= read -r line; do
-                convert_to_oscam "$line" >> "$CONVERTED_FILE"
-            done < "$FINAL_FILE"
-            cat "$CONVERTED_FILE" >> "$OUTPUT_FILE"
-        else
-            # For CCcam, just add the raw servers
-            cat "$FINAL_FILE" >> "$OUTPUT_FILE"
-        fi
-        
-        echo "$END_MARKER" >> "$OUTPUT_FILE"
-        
-        echo "$(date '+[%Y-%m-%d %H:%M:%S]') Success! Added $FINAL_COUNT servers to $OUTPUT_FILE" >> "$LOG_FILE"
-        
-        # Verify the file was written
+
+        {
+            echo ""
+            echo "$START_MARKER"
+            echo "# Generated on $(date '+%Y-%m-%d %H:%M:%S')"
+            echo "# Total servers: $FINAL_COUNT"
+
+            if [ "$SOFTCAM_TYPE" = "oscam" ] || [ "$SOFTCAM_TYPE" = "ncam" ]; then
+                log "Converting servers to OSCam/NCam format"
+                : > "$CONVERTED_FILE"
+                while IFS= read -r line; do
+                    convert_to_oscam "$line" >> "$CONVERTED_FILE"
+                done < "$FINAL_FILE"
+                cat "$CONVERTED_FILE"
+            else
+                cat "$FINAL_FILE"
+            fi
+
+            echo "$END_MARKER"
+        } >> "$OUTPUT_FILE"
+
+        log "Success! Added $FINAL_COUNT servers to $OUTPUT_FILE"
+
         if [ -f "$OUTPUT_FILE" ]; then
             if [ "$SOFTCAM_TYPE" = "oscam" ] || [ "$SOFTCAM_TYPE" = "ncam" ]; then
                 WRITTEN_COUNT=$(grep -c '^\[reader\]' "$OUTPUT_FILE")
             else
                 WRITTEN_COUNT=$(grep -cE '^[CN]:' "$OUTPUT_FILE")
             fi
-            echo "$(date '+[%Y-%m-%d %H:%M:%S]') Verification: $WRITTEN_COUNT readers/servers in output file" >> "$LOG_FILE"
+            log "Verification: $WRITTEN_COUNT readers/servers in output file"
         fi
     else
-        echo "$(date '+[%Y-%m-%d %H:%M:%S]') No valid servers found after processing" >> "$LOG_FILE"
+        log "No valid servers found after processing"
     fi
 else
-    echo "$(date '+[%Y-%m-%d %H:%M:%S]') No servers found from any source" >> "$LOG_FILE"
+    log "No servers found from any source"
 fi
 
-# Clean up
-rm -f "$TEMP_FILE" "$FINAL_FILE" "$CONVERTED_FILE" "$TEMP_FILE.download" 2>/dev/null
+rm -f "$TEMP_FILE" "$FINAL_FILE" "$CONVERTED_FILE" "$DOWNLOAD_FILE" 2>/dev/null
 
-echo "$(date '+[%Y-%m-%d %H:%M:%S]') Cron job completed" >> "$LOG_FILE"
-"""
+log "Cron job completed"
+'''
     try:
-        with open("/usr/lib/enigma2/python/Plugins/Extensions/Levi45FreeServer/cron_download.sh", "w") as f:
+        script_path = os.path.join(PLUGIN_PATH, "cron_download.sh")
+        with open(script_path, "w") as f:
             f.write(cron_script)
-        os.chmod("/usr/lib/enigma2/python/Plugins/Extensions/Levi45FreeServer/cron_download.sh", 0o755)
-        log("Cron download script created")
+        os.chmod(script_path, 0o755)
+        log("Cron download script created at {}".format(script_path))
+        return True
     except Exception as e:
         log("Error creating cron script: {}".format(e))
+        return False
+
 
 def setup_cron_job():
-    """Setup or remove cron job based on settings"""
+    """Setup or remove cron job based on settings."""
     try:
-        os.system("crontab -l | grep -v 'Levi45FreeServer' | crontab -")
+        # Remove any existing Levi45FreeServer cron entries
+        os.system("crontab -l 2>/dev/null | grep -v 'Levi45FreeServer' | crontab -")
         
         if (is_autodownload_enabled() and 
             config.plugins.Levi45FreeServer.enablecron.value == "1"):
@@ -478,7 +577,7 @@ def setup_cron_job():
             cron_cmd = "{} {} * * * /bin/sh {}/cron_download.sh\n".format(
                 minute, hour, PLUGIN_PATH)
             
-            os.system("(crontab -l; echo \"{}\") | crontab -".format(cron_cmd))
+            os.system("(crontab -l 2>/dev/null; echo \"{}\") | crontab -".format(cron_cmd))
             log("Cron job setup for {}:{} daily".format(hour, minute))
         else:
             log("Cron job disabled or removed")
@@ -486,8 +585,10 @@ def setup_cron_job():
     except Exception as e:
         log("Error setting up cron job: {}".format(e))
 
+
 # Initialize last download time
 get_last_download_time()
+
 
 # ============================================================================
 # Settings Screen Class
@@ -505,11 +606,6 @@ class Levi45FreeServerSettings(ConfigListScreen, Screen):
     
     def __init__(self, session):
         Screen.__init__(self, session)
-        # ... existing code ...
-        
-    
-    def __init__(self, session):
-        Screen.__init__(self, session)
         self.setup_title = "Levi45FreeServer Settings"
         
         self.list = []
@@ -517,6 +613,25 @@ class Levi45FreeServerSettings(ConfigListScreen, Screen):
         
         self.current_softcam = config.plugins.Levi45FreeServer.softcam.value
         self.autodownload_enabled = is_autodownload_enabled()
+        
+        self.original_paths = {
+            "cccam": "/etc/CCcam.cfg",
+            "oscam": "/etc/tuxbox/config/oscam.server",
+            "ncam": "/etc/tuxbox/config/ncam.server"
+        }
+        
+        self.customized_paths = {}
+        
+        self.current_paths = {
+            "cccam": config.plugins.Levi45FreeServer.outputfile.value if self.current_softcam == "cccam" else self.original_paths["cccam"],
+            "oscam": config.plugins.Levi45FreeServer.outputfile.value if self.current_softcam == "oscam" else self.original_paths["oscam"],
+            "ncam": config.plugins.Levi45FreeServer.outputfile.value if self.current_softcam == "ncam" else self.original_paths["ncam"]
+        }
+        
+        current_output = config.plugins.Levi45FreeServer.outputfile.value
+        if current_output != self.original_paths[self.current_softcam]:
+            self.customized_paths[self.current_softcam] = current_output
+            self.current_paths[self.current_softcam] = current_output
         
         self.autodownload_value = 1 if self.autodownload_enabled else 0
         self.autodownload = getConfigListEntry("Auto Download", ConfigSelection(choices=[("0", "Disabled"), ("1", "Enabled")], default=str(self.autodownload_value)))
@@ -544,18 +659,18 @@ class Levi45FreeServerSettings(ConfigListScreen, Screen):
             "red": self.cancel,
         }, -2)
         
-        self.update_output_file()
-        log("Settings screen opened - current autodownload: {}".format(self.autodownload_enabled))
+        log("Settings screen opened - current autodownload: {}, current paths: {}".format(
+            self.autodownload_enabled, self.current_paths))
     
     def keyLeft(self):
         ConfigListScreen.keyLeft(self)
-        self.checkSoftcamChange()
         self.update_autodownload_value()
+        self.checkSoftcamChange()
     
     def keyRight(self):
         ConfigListScreen.keyRight(self)
-        self.checkSoftcamChange()
         self.update_autodownload_value()
+        self.checkSoftcamChange()
     
     def update_autodownload_value(self):
         current = self["config"].getCurrent()
@@ -564,26 +679,43 @@ class Levi45FreeServerSettings(ConfigListScreen, Screen):
             log("Updated autodownload value: {}".format(self.autodownload_value))
     
     def checkSoftcamChange(self):
-        if self.current_softcam != config.plugins.Levi45FreeServer.softcam.value:
-            self.current_softcam = config.plugins.Levi45FreeServer.softcam.value
-            self.update_output_file()
-    
-    def update_output_file(self):
-        if self.current_softcam == "cccam":
-            config.plugins.Levi45FreeServer.outputfile.value = "/etc/CCcam.cfg"
-        elif self.current_softcam == "oscam":
-            config.plugins.Levi45FreeServer.outputfile.value = "/etc/tuxbox/config/oscam.server"
-        elif self.current_softcam == "ncam":
-            config.plugins.Levi45FreeServer.outputfile.value = "/etc/tuxbox/config/ncam.server"
+        """Check if softcam type changed and update output file path appropriately."""
+        new_softcam = config.plugins.Levi45FreeServer.softcam.value
         
-        for i, entry in enumerate(self.list):
-            if entry[0] == "Output File":
-                self.list[i] = getConfigListEntry("Output File", config.plugins.Levi45FreeServer.outputfile)
-                break
-        
-        self["config"].setList(self.list)
+        if self.current_softcam != new_softcam:
+            log("Softcam changed from {} to {}".format(self.current_softcam, new_softcam))
+            
+            current_output = config.plugins.Levi45FreeServer.outputfile.value
+            
+            if current_output != self.original_paths[self.current_softcam]:
+                self.customized_paths[self.current_softcam] = current_output
+                log("Saved customized path for {}: {}".format(self.current_softcam, current_output))
+            
+            self.current_paths[self.current_softcam] = current_output
+            
+            if new_softcam in self.customized_paths:
+                new_path = self.customized_paths[new_softcam]
+                log("Using previously customized path for {}: {}".format(new_softcam, new_path))
+            else:
+                new_path = self.original_paths[new_softcam]
+                log("Using default path for {}: {}".format(new_softcam, new_path))
+            
+            config.plugins.Levi45FreeServer.outputfile.value = new_path
+            
+            for i, entry in enumerate(self.list):
+                if entry[0] == "Output File":
+                    self.list[i] = getConfigListEntry("Output File", config.plugins.Levi45FreeServer.outputfile)
+                    break
+            
+            self["config"].setList(self.list)
+            self.current_softcam = new_softcam
     
     def save(self):
+        current_output = config.plugins.Levi45FreeServer.outputfile.value
+        if current_output != self.original_paths[self.current_softcam]:
+            self.customized_paths[self.current_softcam] = current_output
+            log("Saving customized path for {}: {}".format(self.current_softcam, current_output))
+        
         for x in self["config"].list:
             x[1].save()
         
@@ -593,10 +725,23 @@ class Levi45FreeServerSettings(ConfigListScreen, Screen):
         success = set_autodownload_enabled(enabled)
         log("Save autodownload result: {}".format(success))
         
+        # Write state files the cron script reads directly
+        write_softcam_state()
+        write_outputfile_state()
+        
+        # Regenerate the cron script (always the correct version)
+        create_cron_script()
+        
+        # Setup cron job
         setup_cron_job()
+        
+        # Save the main config file
         configfile.save()
         
-        log("All settings saved - autodownload: {}".format(enabled))
+        log("All settings saved - autodownload: {}, softcam: {}, output file: {}".format(
+            enabled,
+            config.plugins.Levi45FreeServer.softcam.value,
+            config.plugins.Levi45FreeServer.outputfile.value))
         self.close(True)
     
     def cancel(self):
@@ -604,13 +749,14 @@ class Levi45FreeServerSettings(ConfigListScreen, Screen):
             x[1].cancel()
         self.close(False)
 
+
 # ============================================================================
 # Main Plugin Screen Class
 # ============================================================================
 
 class Levi45FreeServerScreen(Screen):
     skin = """
-        <screen name="Levi45FreeServerScreen" position="center,center" size="550,630" title="Satellite-Forum.Com V 2.2">
+        <screen name="Levi45FreeServerScreen" position="center,center" size="550,630" title="Satellite-Forum.Com V 2.6">
             <widget name="status_label" position="10,10" size="580,200" font="Regular;20" />
             <widget name="info_label" position="10,220" size="580,100" font="Regular;16" />
             <eLabel text="\c0000ffffPress Blue to save as CCcam" position="10,330" size="580,30" font="Regular;18" />
@@ -627,11 +773,9 @@ class Levi45FreeServerScreen(Screen):
     def __init__(self, session, args=None):
         Screen.__init__(self, session)
         
-        # Initialize the widgets
         self["status_label"] = Label("Ready to download free servers...")
         self["info_label"] = Label("Free Server Downloader")
         
-        # Add the support label with colored text
         support_txt = "Please Support if you like the plugin"
         self["support"] = Label(support_txt)
         
@@ -652,19 +796,12 @@ class Levi45FreeServerScreen(Screen):
         # Fix for eTimer - Dreambox compatible
         self.check_timer = eTimer()
         
-        # Try different methods for connecting the timer
         try:
-            # Method 1: Modern Enigma2 (callback attribute)
             if hasattr(self.check_timer, 'callback'):
                 self.check_timer.callback.append(self.check_auto_download)
-            # Method 2: Older Enigma2 (timeout connect)
             elif hasattr(self.check_timer, 'timeout'):
                 self.check_timer.timeout.get().append(self.check_auto_download)
-            # Method 3: Alternative approach (using connect)
-            elif hasattr(self.check_timer, 'timeout'):
-                self.check_timer_conn = self.check_timer.timeout.connect(self.check_auto_download)
         except:
-            # Method 4: Fallback - use the most common approach
             try:
                 self.check_timer.timeout.get().append(self.check_auto_download)
             except:
@@ -687,7 +824,7 @@ class Levi45FreeServerScreen(Screen):
             print("Failed to write to log file: {}".format(e))
 
     def check_auto_download(self):
-        """Check if it's time for auto-download"""
+        """Check if it's time for auto-download."""
         if not is_autodownload_enabled():
             return
         
@@ -721,19 +858,16 @@ class Levi45FreeServerScreen(Screen):
         self.session.openWithCallback(self.settingsClosed, Levi45FreeServerSettings)
     
     def settingsClosed(self, result):
-        """Callback when settings screen is closed"""
+        """Callback when settings screen is closed."""
         if result:
-            # Settings were saved
             enabled = is_autodownload_enabled()
             status_text = "Settings saved. Auto-download {}.".format("ENABLED" if enabled else "DISABLED")
             
-            # Update the status label safely
             try:
                 if "status_label" in self:
                     self["status_label"].setText(status_text)
             except Exception as e:
                 log("Error updating status label: {}".format(e))
-                # Fallback to message box
                 from Screens.MessageBox import MessageBox
                 self.session.open(MessageBox, status_text, MessageBox.TYPE_INFO, timeout=5)
 
@@ -748,12 +882,18 @@ class Levi45FreeServerScreen(Screen):
         self.start_download(softcam_type)
 
     def start_download_cccam(self):
+        config.plugins.Levi45FreeServer.softcam.value = "cccam"
+        config.plugins.Levi45FreeServer.outputfile.value = "/etc/CCcam.cfg"
         self.start_download("cccam")
 
     def start_download_oscam(self):
+        config.plugins.Levi45FreeServer.softcam.value = "oscam"
+        config.plugins.Levi45FreeServer.outputfile.value = "/etc/tuxbox/config/oscam.server"
         self.start_download("oscam")
         
     def start_download_ncam(self):
+        config.plugins.Levi45FreeServer.softcam.value = "ncam"
+        config.plugins.Levi45FreeServer.outputfile.value = "/etc/tuxbox/config/ncam.server"
         self.start_download("ncam")
 
     def start_download(self, format_choice):
@@ -780,12 +920,14 @@ class Levi45FreeServerScreen(Screen):
             log("Attempting to scrape from {} with parser '{}'".format(url, parser_name))
             
             try:
-                cmd = ["curl", "-k", "-s", "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36", url]
+                cmd = ["curl", "-k", "-s", "-L", "--max-time", "30",
+                       "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36",
+                       url]
                 process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 stdout, stderr = process.communicate()
                 
                 if process.returncode == 0:
-                    html_content_decoded = stdout.decode('utf-8')
+                    html_content_decoded = stdout.decode('utf-8', 'ignore')
                     log("Raw HTML from {}:\n{}...".format(url, html_content_decoded[:500]))
                     
                     parser_func = PARSERS.get(parser_name)
@@ -798,7 +940,7 @@ class Levi45FreeServerScreen(Screen):
                         if "status_label" in self:
                             self["status_label"].setText("No parser found for {}. Skipping.".format(parser_name))
                 else:
-                    error_msg = stderr.decode('utf-8')
+                    error_msg = stderr.decode('utf-8', 'ignore')
                     if "status_label" in self:
                         self["status_label"].setText("Failed to download from {}.".format(url))
                     log("Failed to download from {}: {}".format(url, error_msg))
@@ -823,15 +965,17 @@ class Levi45FreeServerScreen(Screen):
         start_marker = "# >>>>>> BEGIN AUTO-GENERATED BY Levi45FreeServer <<<<<<\n"
         end_marker = "# >>>>>> END AUTO-GENERATED BY Levi45FreeServer <<<<<<\n"
 
-        if is_autodownload_enabled():
-            output_files = [config.plugins.Levi45FreeServer.outputfile.value]
+        # Determine target file dynamically based on button/format selection
+        if self.format_choice == "cccam":
+            file_path = "/etc/CCcam.cfg"
+        elif self.format_choice == "ncam":
+            file_path = "/etc/tuxbox/config/ncam.server"
+        elif self.format_choice == "oscam":
+            file_path = "/etc/tuxbox/config/oscam.server"
         else:
-            if self.format_choice == "cccam":
-                output_files = ["/etc/CCcam.cfg", "/etc/tuxbox/config/CCcam.cfg"]
-            elif self.format_choice == "oscam":
-                output_files = ["/etc/tuxbox/config/oscam.server"]
-            elif self.format_choice == "ncam":
-                output_files = ["/etc/tuxbox/config/ncam.server"]
+            file_path = config.plugins.Levi45FreeServer.outputfile.value
+
+        output_files = [file_path]
 
         for file_path in output_files:
             try:
@@ -851,11 +995,19 @@ class Levi45FreeServerScreen(Screen):
                 else:
                     cleaned_content = existing_content
                 
+                parent = os.path.dirname(file_path)
+                if parent and not os.path.exists(parent):
+                    try:
+                        os.makedirs(parent)
+                    except:
+                        pass
+                
                 with open(file_path, "w") as f:
                     f.write(cleaned_content.strip())
                     
                     if self.format_choice in ["oscam", "ncam"]:
                         oscam_servers = [convert_to_oscam_reader(s) for s in self.servers_to_save]
+                        oscam_servers = [s for s in oscam_servers if s]
                         if oscam_servers:
                             f.write("\n\n" + start_marker)
                             for server_line in oscam_servers:
@@ -877,12 +1029,23 @@ class Levi45FreeServerScreen(Screen):
                     self["status_label"].setText("Failed to write to file {}: {}".format(file_path, e))
                 log("Failed to write to file {}: {}".format(file_path, e))
 
-# Create cron script on plugin load
+
+# ============================================================================
+# Plugin initialization
+# ============================================================================
+# On every plugin load:
+#   1. Regenerate cron_download.sh with the correct, working contents
+#   2. Sync state files with current config
+#   3. Install / remove cron entry to match current settings
+
 try:
     create_cron_script()
+    write_softcam_state()
+    write_outputfile_state()
     setup_cron_job()
 except Exception as e:
     log("Error during plugin initialization: {}".format(e))
+
 
 # ============================================================================
 # Main Plugin Descriptor
@@ -892,5 +1055,5 @@ def main(session, **kwargs):
     session.open(Levi45FreeServerScreen)
 
 def Plugins(**kwargs):
-    return [PluginDescriptor(name="Levi45FreeServer", description="Satellite-Forum.Com V 2.2",
+    return [PluginDescriptor(name="Levi45FreeServer", description="Satellite-Forum.Com V 2.6",
                              where=PluginDescriptor.WHERE_PLUGINMENU, fnc=main, icon="plugin.png")]
